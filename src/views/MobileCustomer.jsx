@@ -1,240 +1,213 @@
-import React, { useContext, useState } from 'react';
-import { StoreContext } from '../context/StoreContext';
-import { ShoppingCart, Plus, Minus, ArrowRight } from 'lucide-react';
+import React, { useState, useEffect, useContext } from 'react';
+import { supabase } from '../supabaseClient';
+import { StoreContext } from '../context/StoreContext'; // IMPORT CONTEXT
 
 export default function MobileCustomer() {
-  const { menuItems, placeOrder } = useContext(StoreContext);
+  // AMBIL DATA MENU DARI CONTEXT (Sama seperti Kasir)
+  const { menuItems } = useContext(StoreContext); 
+  
   const [cart, setCart] = useState([]);
-  const [isCheckout, setIsCheckout] = useState(false);
-  const [customerName, setCustomerName] = useState('');
-  const [orderType, setOrderType] = useState('Dine In');
-  const [orderSuccess, setOrderSuccess] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [tableNumber, setTableNumber] = useState(null);
+  const [orderSuccess, setOrderSuccess] = useState(false);
 
-  // KITA TIDAK LAGI MEMFILTER MENU, SEMUA MENU DITAMPILKAN
-  // const availableItems = menuItems.filter(item => item.isAvailable && item.stock > 0);
+  // Filter menu yang stoknya ada dan tersedia langsung dari Context
+  const availableMenu = menuItems.filter(item => item.isAvailable && item.stock > 0);
 
-  const addToCart = (item) => {
-    setCart(prev => {
-      const existing = prev.find(i => i.id === item.id);
-      if (existing) {
-        if (existing.quantity >= item.stock) return prev; // Cannot exceed stock
-        return prev.map(i => i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i);
-      }
-      return [...prev, { ...item, quantity: 1 }];
-    });
+  useEffect(() => {
+    // Tangkap parameter nomor meja dari URL hasil scan QR
+    const searchParams = new URLSearchParams(window.location.search);
+    const table = searchParams.get('table');
+    setTableNumber(table || 'Bawa Pulang');
+
+    // Siapkan script Midtrans di HP pelanggan
+    const snapScript = "https://app.sandbox.midtrans.com/snap/snap.js";
+    const clientKey = "Mid-client-k1JTDssT7uPoIOz_"; // Ganti dengan Client Key Sandbox Anda
+    
+    if (!document.getElementById("midtrans-script-mobile")) {
+      const script = document.createElement("script");
+      script.src = snapScript;
+      script.id = "midtrans-script-mobile";
+      script.setAttribute("data-client-key", clientKey);
+      document.body.appendChild(script);
+    }
+  }, []);
+
+  const addToCart = (product) => {
+    const existing = cart.find(i => i.id === product.id);
+    if (existing) {
+      if (existing.quantity >= product.stock) return alert("Maksimal stok tercapai!");
+      setCart(cart.map(i => i.id === product.id ? { ...i, quantity: i.quantity + 1 } : i));
+    } else {
+      setCart([...cart, { ...product, quantity: 1 }]);
+    }
   };
 
-  const removeFromCart = (id) => {
-    setCart(prev => {
-      const existing = prev.find(i => i.id === id);
-      if (existing && existing.quantity > 1) {
-        return prev.map(i => i.id === id ? { ...i, quantity: i.quantity - 1 } : i);
-      }
-      return prev.filter(i => i.id !== id);
-    });
+  const decreaseQuantity = (id) => {
+    const item = cart.find(i => i.id === id);
+    if (!item) return;
+    if (item.quantity === 1) {
+      setCart(cart.filter(i => i.id !== id));
+    } else {
+      setCart(cart.map(i => i.id === id ? { ...i, quantity: item.quantity - 1 } : i));
+    }
   };
 
-  const getCartCount = () => cart.reduce((sum, item) => sum + item.quantity, 0);
-  const getCartTotal = () => cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const totalAmount = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
 
-  const handleCheckout = async (e) => {
-  e.preventDefault();
-  if (!customerName) {
-    alert("Masukkan nama terlebih dahulu");
-    return;
-  }
+  const handleCheckout = async () => {
+    if (cart.length === 0) return;
+    setIsProcessing(true);
 
-  // 1. Nyalakan mode loading
-  setIsProcessing(true); 
+    try {
+      // 1. Buat pesanan dengan status 'pending'
+      const { data: orderData, error: orderError } = await supabase
+        .from('orders')
+        .insert([{ 
+          customer_name: `Meja ${tableNumber}`, 
+          order_type: 'Dine In', 
+          total_amount: totalAmount, 
+          status: 'pending' 
+        }])
+        .select().single();
 
-  // 2. Tunggu proses Midtrans selesai dan ambil hasil (true/false)
-  const isPaymentSuccess = await placeOrder(cart, orderType, customerName);
+      if (orderError) throw orderError;
 
-  // 3. Matikan mode loading
-  setIsProcessing(false); 
+      // 2. Simpan item pesanan
+      const { error: itemsError } = await supabase
+        .from('order_items')
+        .insert(cart.map(i => ({ 
+          order_id: orderData.id, 
+          product_id: i.id, 
+          quantity: i.quantity, 
+          subtotal: i.price * i.quantity 
+        })));
 
-  // 4. Jika hasil Midtrans SUKSES, baru pindah ke layar "Pesanan Berhasil"
-  if (isPaymentSuccess) {
-    setOrderSuccess(true);
-    setCart([]);
-    setIsCheckout(false);
-  }
-};
+      if (itemsError) throw itemsError;
+
+      // 3. Panggil Edge Function Midtrans
+      const { data: midData, error: midError } = await supabase.functions.invoke('create-payment', {
+        body: { 
+          order_id: orderData.id, 
+          total_amount: totalAmount, 
+          customer_name: `Meja ${tableNumber}`,
+          is_qris_only: false 
+        }
+      });
+
+      if (midError || !midData?.token) throw new Error("Gagal terhubung ke gerbang pembayaran.");
+
+      // 4. Buka popup Midtrans di HP pelanggan
+      if (window.snap) {
+        window.snap.pay(midData.token, {
+          onSuccess: async () => {
+            await supabase.from('orders').update({ status: 'paid' }).eq('id', orderData.id);
+            setCart([]);
+            setOrderSuccess(true);
+            setIsProcessing(false);
+          },
+          onPending: () => {
+            alert("Pembayaran tertunda. Silakan selesaikan di aplikasi Anda.");
+            setIsProcessing(false);
+          },
+          onError: () => {
+            alert("Pembayaran gagal. Silakan coba lagi.");
+            setIsProcessing(false);
+          },
+          onClose: () => {
+            setIsProcessing(false);
+          }
+        });
+      }
+    } catch (error) {
+      alert("Terjadi kesalahan: " + error.message);
+      setIsProcessing(false);
+    }
+  };
 
   if (orderSuccess) {
     return (
-      <div className="container" style={{ textAlign: 'center', marginTop: '5rem' }}>
-        <div style={{ background: 'white', padding: '3rem', borderRadius: '12px', display: 'inline-block' }}>
-          <h2 style={{ color: 'var(--success)', marginBottom: '1rem' }}>Pesanan Berhasil!</h2>
-          <p>Terima kasih <strong>{customerName}</strong>, pesanan Anda sedang diproses.</p>
-          <button className="btn-primary" style={{ marginTop: '2rem' }} onClick={() => setOrderSuccess(false)}>
-            Pesan Lagi
-          </button>
-        </div>
+      <div style={{ padding: '30px 20px', textAlign: 'center', fontFamily: 'sans-serif' }}>
+        <h1 style={{ color: '#28a745', fontSize: '40px', margin: '0 0 10px 0' }}>✓</h1>
+        <h2>Pembayaran Berhasil!</h2>
+        <p style={{ color: '#666' }}>Pesanan Anda sedang disiapkan oleh dapur. Silakan tunggu di <strong>Meja {tableNumber}</strong>.</p>
+        <button 
+          onClick={() => setOrderSuccess(false)}
+          style={{ marginTop: '20px', padding: '12px 24px', background: '#007bff', color: 'white', border: 'none', borderRadius: '8px', fontWeight: 'bold', width: '100%' }}
+        >
+          Pesan Lagi
+        </button>
       </div>
     );
   }
 
   return (
-    <div className="container" style={{ paddingBottom: '80px' }}>
-      <h2 style={{ marginBottom: '1.5rem', marginTop: '1rem' }}>Menu Cafeifa</h2>
+    <div style={{ padding: '15px', maxWidth: '500px', margin: '0 auto', fontFamily: 'sans-serif', paddingBottom: '100px' }}>
+      
+      {/* HEADER PELANGGAN */}
+      <div style={{ textAlign: 'center', padding: '15px 0', borderBottom: '1px solid #eee', marginBottom: '20px' }}>
+        <h2 style={{ margin: 0, color: '#333' }}>KAFE RESTO KITA</h2>
+        <p style={{ margin: '5px 0 0 0', color: '#007bff', fontWeight: 'bold' }}>📍 Meja Nomor {tableNumber}</p>
+      </div>
 
-      {!isCheckout ? (
-        <>
-          <div className="grid-cards">
-            {/* SEKARANG KITA MENGGUNAKAN menuItems, BUKAN availableItems */}
-            {menuItems.map(item => {
-              // LOGIKA BARU: Cek apakah menu habis atau dimatikan dari dapur
-              const isUnavailable = !item.isAvailable || item.stock <= 0;
+      {/* KATALOG MENU MOBILE */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+        {availableMenu.length === 0 ? (
+           <p style={{ textAlign: 'center', color: 'gray' }}>Sedang memuat menu atau menu sedang kosong...</p>
+        ) : (
+          availableMenu.map(item => (
+            <div key={item.id} style={{ display: 'flex', background: '#fff', padding: '10px', borderRadius: '12px', border: '1px solid #eaeaea', boxShadow: '0 2px 5px rgba(0,0,0,0.02)' }}>
+              
+              <div style={{ width: '80px', height: '80px', background: '#f4f4f4', borderRadius: '8px', overflow: 'hidden', marginRight: '15px', flexShrink: 0 }}>
+                {item.image_url ? (
+                  <img src={item.image_url} alt={item.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ) : (
+                  <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#aaa', fontSize: '10px' }}>No Img</div>
+                )}
+              </div>
 
-              return (
-                <div key={item.id} className="card" style={{ 
-                  display: 'flex', 
-                  flexDirection: 'column', 
-                  justifyContent: 'space-between', 
-                  padding: '1rem',
-                  // EFEK ABU-ABU JIKA TIDAK TERSEDIA
-                  filter: isUnavailable ? 'grayscale(100%) opacity(60%)' : 'none',
-                  pointerEvents: isUnavailable ? 'none' : 'auto' // Mencegah interaksi jika tidak tersedia
-                }}>
-                  <div>
-                    {/* TAMPILAN GAMBAR PRODUK */}
-                    {item.image_url ? (
-                      <img 
-                        src={item.image_url} 
-                        alt={item.name} 
-                        style={{ 
-                          width: '100%', 
-                          height: '160px', 
-                          objectFit: 'cover', 
-                          borderRadius: '8px', 
-                          marginBottom: '1rem' 
-                        }} 
-                      />
-                    ) : (
-                      <div style={{ 
-                        width: '100%', 
-                        height: '160px', 
-                        backgroundColor: '#f3f4f6', 
-                        borderRadius: '8px', 
-                        marginBottom: '1rem', 
-                        display: 'flex', 
-                        alignItems: 'center', 
-                        justifyContent: 'center', 
-                        color: '#9ca3af',
-                        fontSize: '0.9rem'
-                      }}>
-                        Tidak ada gambar
-                      </div>
-                    )}
-
-                    <h3 style={{ fontSize: '1.2rem', marginBottom: '0.25rem' }}>{item.name}</h3>
-                    <p style={{ color: 'var(--primary-color)', fontWeight: 'bold' }}>Rp {item.price.toLocaleString('id-ID')}</p>
-                    
-                    {/* INDIKATOR STOK / HABIS */}
-                    <p style={{ 
-                      fontSize: '0.8rem', 
-                      color: isUnavailable ? 'red' : 'var(--gray-800)', 
-                      marginTop: '0.5rem',
-                      fontWeight: isUnavailable ? 'bold' : 'normal'
-                    }}>
-                      {isUnavailable ? 'Habis / Tidak Tersedia' : `Sisa stok: ${item.stock}`}
-                    </p>
-                  </div>
-
-                  <div style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    {/* JIKA HABIS, TAMPILKAN TOMBOL DISABLED */}
-                    {isUnavailable ? (
-                      <button disabled style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: 'none', background: '#ccc', color: '#666', fontWeight: 'bold' }}>
-                        Habis
-                      </button>
-                    ) : cart.find(c => c.id === item.id) ? (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', background: 'var(--gray-200)', borderRadius: '8px', padding: '0.25rem' }}>
-                        <button onClick={() => removeFromCart(item.id)} style={{ padding: '0.25rem', background: 'white', color: 'var(--danger)', borderRadius: '4px', border: 'none' }}><Minus size={16} /></button>
-                        <span style={{ fontWeight: 'bold', width: '20px', textAlign: 'center' }}>{cart.find(c => c.id === item.id).quantity}</span>
-                        <button onClick={() => addToCart(item)} style={{ padding: '0.25rem', background: 'white', color: 'var(--success)', borderRadius: '4px', border: 'none' }} disabled={cart.find(c => c.id === item.id).quantity >= item.stock}><Plus size={16} /></button>
-                      </div>
-                    ) : (
-                      <button className="btn-primary" style={{ width: '100%' }} onClick={() => addToCart(item)}>
-                        Tambah
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {cart.length > 0 && (
-            <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, background: 'white', padding: '1rem', boxShadow: '0 -4px 6px -1px rgba(0,0,0,0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: 10 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                <div style={{ position: 'relative' }}>
-                  <ShoppingCart size={28} color="var(--primary-color)" />
-                  <span style={{ position: 'absolute', top: '-8px', right: '-8px', background: 'var(--danger)', color: 'white', borderRadius: '50%', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 'bold' }}>
-                    {getCartCount()}
-                  </span>
-                </div>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
                 <div>
-                  <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--gray-800)' }}>Total</p>
-                  <p style={{ margin: 0, fontWeight: 'bold', color: 'var(--primary-color)' }}>Rp {getCartTotal().toLocaleString('id-ID')}</p>
+                  <strong style={{ fontSize: '15px', display: 'block', marginBottom: '4px' }}>{item.name}</strong>
+                  <span style={{ color: '#28a745', fontWeight: 'bold', fontSize: '14px' }}>Rp {item.price.toLocaleString('id-ID')}</span>
+                </div>
+                
+                <div style={{ alignSelf: 'flex-end' }}>
+                  {cart.find(i => i.id === item.id) ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', background: '#f8f9fa', padding: '4px', borderRadius: '20px', border: '1px solid #ddd' }}>
+                      <button onClick={() => decreaseQuantity(item.id)} style={{ width: '28px', height: '28px', borderRadius: '50%', border: 'none', background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', fontWeight: 'bold', cursor: 'pointer' }}>-</button>
+                      <span style={{ fontWeight: 'bold', fontSize: '14px', minWidth: '15px', textAlign: 'center' }}>{cart.find(i => i.id === item.id).quantity}</span>
+                      <button onClick={() => addToCart(item)} style={{ width: '28px', height: '28px', borderRadius: '50%', border: 'none', background: '#007bff', color: 'white', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', fontWeight: 'bold', cursor: 'pointer' }}>+</button>
+                    </div>
+                  ) : (
+                    <button onClick={() => addToCart(item)} style={{ padding: '6px 15px', background: '#007bff', color: 'white', border: 'none', borderRadius: '20px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}>
+                      + Tambah
+                    </button>
+                  )}
                 </div>
               </div>
-              <button className="btn-primary" onClick={() => setIsCheckout(true)}>
-                Checkout <ArrowRight size={18} />
-              </button>
             </div>
-          )}
-        </>
-      ) : (
-        <div className="card" style={{ maxWidth: '600px', margin: '0 auto' }}>
-          <h3>Konfirmasi Pesanan</h3>
-          <div style={{ margin: '1.5rem 0' }}>
-            {cart.map(item => (
-              <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', paddingBottom: '0.5rem', borderBottom: '1px solid var(--gray-200)' }}>
-                <span>{item.quantity}x {item.name}</span>
-                <span>Rp {(item.price * item.quantity).toLocaleString('id-ID')}</span>
-              </div>
-            ))}
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '1rem', fontWeight: 'bold', fontSize: '1.2rem' }}>
-              <span>Total Pembayaran</span>
-              <span style={{ color: 'var(--primary-color)' }}>Rp {getCartTotal().toLocaleString('id-ID')}</span>
-            </div>
+          ))
+        )}
+      </div>
+
+      {/* FLOATING ACTION BUTTON */}
+      {cart.length > 0 && (
+        <div style={{ position: 'fixed', bottom: '0', left: '0', right: '0', background: 'white', padding: '15px', boxShadow: '0 -4px 15px rgba(0,0,0,0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: 100 }}>
+          <div>
+            <div style={{ fontSize: '12px', color: '#666' }}>Total Pesanan:</div>
+            <strong style={{ fontSize: '18px' }}>Rp {totalAmount.toLocaleString('id-ID')}</strong>
           </div>
-
-          <form onSubmit={handleCheckout}>
-            <div style={{ marginBottom: '1rem' }}>
-              <label style={{ display: 'block', marginBottom: '0.5rem' }}>Nama Pelanggan</label>
-              <input
-                type="text"
-                value={customerName}
-                onChange={e => setCustomerName(e.target.value)}
-                style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--gray-300)' }}
-                placeholder="Masukkan nama Anda"
-                required
-              />
-            </div>
-            <div style={{ marginBottom: '1.5rem' }}>
-              <label style={{ display: 'block', marginBottom: '0.5rem' }}>Tipe Pesanan</label>
-              <select
-                value={orderType}
-                onChange={e => setOrderType(e.target.value)}
-                style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--gray-300)' }}
-              >
-                <option value="Dine In">Makan di Tempat (Dine In)</option>
-                <option value="Takeaway">Bawa Pulang (Takeaway)</option>
-              </select>
-            </div>
-
-            <div style={{ display: 'flex', gap: '1rem' }}>
-              <button type="button" className="btn-secondary" style={{ flex: 1 }} onClick={() => setIsCheckout(false)}>Kembali</button>
-              <button type="submit" className="btn-primary" style={{ flex: 2 }} disabled={isProcessing}>
-                {isProcessing ? 'Memuat Pembayaran...' : 'Pesan Sekarang'}
-              </button>
-            </div>
-          </form>
+          <button 
+            onClick={handleCheckout} 
+            disabled={isProcessing}
+            style={{ background: '#28a745', color: 'white', padding: '12px 25px', border: 'none', borderRadius: '25px', fontWeight: 'bold', fontSize: '15px', cursor: 'pointer' }}
+          >
+            {isProcessing ? 'Memproses...' : 'Bayar Sekarang ➔'}
+          </button>
         </div>
       )}
+
     </div>
   );
 }

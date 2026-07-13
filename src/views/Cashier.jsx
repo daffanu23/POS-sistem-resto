@@ -2,30 +2,45 @@ import React, { useContext, useEffect, useState, useRef } from 'react';
 import { StoreContext } from '../context/StoreContext';
 import { supabase } from '../supabaseClient'; 
 import { useReactToPrint } from 'react-to-print'; 
+import { QRCodeSVG } from 'qrcode.react'; 
 
 export default function Cashier() {
   const { user, signOut, menuItems } = useContext(StoreContext);
   
-  // State Antrean
+  // State Antrean Pesanan
   const [orders, setOrders] = useState([]);
   const [isLoadingQueue, setIsLoadingQueue] = useState(true);
 
-  // State Kasir Manual
+  // State Point of Sale (POS) Manual
   const [cart, setCart] = useState([]);
   const [customerName, setCustomerName] = useState('');
   const [orderType, setOrderType] = useState('Dine In');
-  const [paymentMethod, setPaymentMethod] = useState('Tunai'); // STATE BARU: Metode Bayar
+  const [paymentMethod, setPaymentMethod] = useState('Tunai'); 
   const [cashReceived, setCashReceived] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // State Struk
+  // State Modal Struk
   const [receiptData, setReceiptData] = useState(null);
-  
-  // Ref Print
   const componentRef = useRef();
+
+  // State Generator QR Meja
+  const [showQrManager, setShowQrManager] = useState(false);
+  const [inputJumlahMeja, setInputJumlahMeja] = useState(10); 
+  const qrPrintRef = useRef();
 
   useEffect(() => {
     fetchOrders();
+    
+    const snapScript = "https://app.sandbox.midtrans.com/snap/snap.js";
+    const clientKey = "SB-Mid-client-XXXXX"; // Sesuaikan dengan Client Key Sandbox Anda
+    
+    if (!document.getElementById("midtrans-script")) {
+      const script = document.createElement("script");
+      script.src = snapScript;
+      script.id = "midtrans-script";
+      script.setAttribute("data-client-key", clientKey);
+      document.body.appendChild(script);
+    }
   }, []);
 
   const fetchOrders = async () => {
@@ -36,11 +51,10 @@ export default function Cashier() {
         .select('*')
         .neq('status', 'pending') 
         .order('created_at', { ascending: false }); 
-
       if (error) throw error;
       setOrders(data || []);
     } catch (error) {
-      console.error("Gagal mengambil data pesanan:", error.message);
+      console.error("Gagal mengambil antrean:", error.message);
     } finally {
       setIsLoadingQueue(false);
     }
@@ -48,266 +62,210 @@ export default function Cashier() {
 
   const markAsCompleted = async (orderId) => {
     try {
-      const { error } = await supabase.from('orders').update({ status: 'completed' }).eq('id', orderId);
-      if (error) throw error;
+      await supabase.from('orders').update({ status: 'completed' }).eq('id', orderId);
       fetchOrders(); 
     } catch (error) {
-      console.error("Gagal update status:", error.message);
-      alert("Gagal menyelesaikan pesanan.");
+      alert("Gagal memperbarui status pesanan.");
     }
   };
 
   const addToCart = (product) => {
-    if (product.stock <= 0 || !product.isAvailable) return alert("Menu ini sedang tidak tersedia atau habis!");
-    const existingItem = cart.find(item => item.id === product.id);
-    if (existingItem) {
-      if (existingItem.quantity >= product.stock) return alert("Stok tidak mencukupi!");
-      setCart(cart.map(item => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item));
+    if (product.stock <= 0 || !product.isAvailable) return alert("Menu tidak tersedia atau stok habis!");
+    const existing = cart.find(i => i.id === product.id);
+    if (existing) {
+      if (existing.quantity >= product.stock) return alert("Jumlah melampaui stok!");
+      setCart(cart.map(i => i.id === product.id ? { ...i, quantity: i.quantity + 1 } : i));
     } else {
       setCart([...cart, { ...product, quantity: 1 }]);
     }
   };
 
-  const decreaseQuantity = (productId) => {
-    const existingItem = cart.find(item => item.id === productId);
-    if (!existingItem) return;
-    if (existingItem.quantity === 1) {
-      setCart(cart.filter(item => item.id !== productId));
-    } else {
-      setCart(cart.map(item => item.id === productId ? { ...item, quantity: item.quantity - 1 } : item));
-    }
+  const decreaseQuantity = (id) => {
+    const item = cart.find(i => i.id === id);
+    if (!item) return;
+    if (item.quantity === 1) setCart(cart.filter(i => i.id !== id));
+    else setCart(cart.map(i => i.id === id ? { ...i, quantity: item.quantity - 1 } : i));
   };
 
-  const removeFromCart = (productId) => {
-    setCart(cart.filter(item => item.id !== productId));
-  };
+  const removeFromCart = (id) => setCart(cart.filter(i => i.id !== id));
 
   const totalAmount = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
   const change = (paymentMethod === 'Tunai' && cashReceived) ? parseInt(cashReceived, 10) - totalAmount : 0;
 
   const handlePayment = async (e) => {
     e.preventDefault();
-    if (!customerName) return alert("Masukkan nama pelanggan terlebih dahulu!");
-    if (cart.length === 0) return alert("Keranjang masih kosong!");
-    if (paymentMethod === 'Tunai' && (!cashReceived || change < 0)) return alert("Jumlah uang tunai kurang!");
+    if (!customerName || cart.length === 0) return alert("Nama pelanggan atau keranjang kosong!");
+    if (paymentMethod === 'Tunai' && (!cashReceived || change < 0)) return alert("Nominal uang tunai kurang!");
 
     setIsProcessing(true);
     try {
       const { data: orderData, error: orderError } = await supabase
         .from('orders')
-        .insert([{
-          customer_name: customerName,
-          order_type: orderType,
-          total_amount: totalAmount,
-          status: 'paid' 
-        }])
-        .select()
-        .single();
+        .insert([{ customer_name: customerName, order_type: orderType, total_amount: totalAmount, status: paymentMethod === 'Tunai' ? 'paid' : 'pending' }])
+        .select().single();
 
       if (orderError) throw orderError;
 
-      const orderItemsData = cart.map(item => ({
-        order_id: orderData.id,
-        product_id: item.id,
-        quantity: item.quantity,
-        subtotal: item.price * item.quantity
-      }));
+      await supabase.from('order_items').insert(cart.map(i => ({ 
+        order_id: orderData.id, product_id: i.id, quantity: i.quantity, subtotal: i.price * i.quantity 
+      })));
 
-      const { error: itemsError } = await supabase.from('order_items').insert(orderItemsData);
-      if (itemsError) throw itemsError;
+      if (paymentMethod === 'Tunai') {
+        tampilkanStruk(orderData.id);
+      } else {
+        const { data: midData, error: midError } = await supabase.functions.invoke('create-payment', {
+          body: { order_id: orderData.id, total_amount: totalAmount, customer_name: customerName, is_qris_only: true }
+        });
 
-      // SET DATA STRUK
-      setReceiptData({
-        orderId: orderData.id,
-        customerName: customerName,
-        orderType: orderType,
-        paymentMethod: paymentMethod, // Simpan metode bayar
-        cashierName: user?.user_metadata?.full_name || 'Kasir',
-        items: [...cart],
-        totalAmount: totalAmount,
-        cashReceived: paymentMethod === 'Tunai' ? parseInt(cashReceived, 10) : totalAmount, // Jika QRIS, anggap uang diterima pas
-        change: paymentMethod === 'Tunai' ? change : 0,
-        date: new Date().toLocaleString('id-ID')
-      });
+        if (midError || !midData?.token) throw new Error("Gagal memperoleh token Midtrans.");
 
-      // Reset
-      setCart([]);
-      setCustomerName('');
-      setCashReceived('');
-      setPaymentMethod('Tunai'); // Reset ke default Tunai
-      fetchOrders(); 
-
+        if (window.snap) {
+          window.snap.pay(midData.token, {
+            onSuccess: async () => {
+              await supabase.from('orders').update({ status: 'paid' }).eq('id', orderData.id);
+              tampilkanStruk(orderData.id);
+            },
+            onClose: () => setIsProcessing(false)
+          });
+        }
+      }
     } catch (error) {
-      console.error("Gagal memproses pembayaran:", error.message);
-      alert("Terjadi kesalahan saat menyimpan pesanan.");
-    } finally {
+      alert("Kendala: " + error.message);
       setIsProcessing(false);
     }
   };
 
-  const handlePrint = useReactToPrint({
-    contentRef: componentRef,
-    documentTitle: `Struk_${receiptData?.customerName || 'Pelanggan'}`,
-    onAfterPrint: () => console.log('Berhasil mencetak struk!'),
-  });
+  const tampilkanStruk = (id) => {
+    setReceiptData({ 
+      orderId: id, customerName, orderType, paymentMethod, cashierName: user?.user_metadata?.full_name || 'Kasir', 
+      items: [...cart], totalAmount, cashReceived: paymentMethod === 'Tunai' ? parseInt(cashReceived, 10) : totalAmount, 
+      change: paymentMethod === 'Tunai' ? change : 0, date: new Date().toLocaleString('id-ID') 
+    });
+    setCart([]); setCustomerName(''); setCashReceived(''); setPaymentMethod('Tunai'); fetchOrders(); setIsProcessing(false);
+  };
+
+  const handlePrintReceipt = useReactToPrint({ contentRef: componentRef });
+  const handlePrintQrCodes = useReactToPrint({ contentRef: qrPrintRef });
+
+  // URL DIKUNCI LANGSUNG KE PRODUCTION VERCEL RESTORAN
+  const baseUrl = "https://pos-sistem-resto.vercel.app";
 
   return (
-    <div style={{ padding: '20px', maxWidth: '1600px', margin: '0 auto', boxSizing: 'border-box' }}>
+    <div style={{ padding: '25px', maxWidth: '1600px', margin: '0 auto', fontFamily: 'sans-serif', boxSizing: 'border-box' }}>
       
-      {/* HEADER KASIR */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+      {/* HEADER UTAMA */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', backgroundColor: '#fff', padding: '15px', borderRadius: '8px', border: '1px solid #e0e0e0' }}>
         <div>
-          <h2 style={{ margin: 0 }}>Panel Kasir</h2>
-          <p style={{ margin: '3px 0 0 0', color: 'gray', fontSize: '14px' }}>Halo, {user?.user_metadata?.full_name || 'Kasir'}!</p>
+          <h2 style={{ margin: 0, color: '#333' }}>Panel Operasional Kasir</h2>
+          <p style={{ margin: '4px 0 0 0', color: '#777', fontSize: '14px' }}>Petugas: <strong>{user?.user_metadata?.full_name || 'Kasir Resto'}</strong></p>
         </div>
-        <button onClick={signOut} style={{ padding: '8px 15px', background: '#dc3545', color: 'white', borderRadius: '5px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
-          Logout
-        </button>
+        <div style={{ display: 'flex', gap: '10px' }}>
+          <button onClick={() => setShowQrManager(true)} style={{ background: '#007bff', color: 'white', padding: '10px 15px', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
+            🛠️ Generator QR Meja
+          </button>
+          <button onClick={signOut} style={{ background: '#dc3545', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Logout</button>
+        </div>
       </div>
 
       <hr style={{ border: '1px solid #eee', marginBottom: '20px' }} />
 
-      {/* LAYOUT UTAMA (70% KASIR : 30% ANTREAN) */}
+      {/* LAYOUT GRID UTAMA */}
       <div style={{ display: 'flex', gap: '25px', alignItems: 'flex-start' }}>
         
-        {/* AREA A: WALK-IN (70%) */}
-        <div style={{ flex: '7', display: 'flex', gap: '20px', alignItems: 'flex-start' }}>
-          
-          {/* Katalog Menu */}
-          <div style={{ flex: '1.2', background: '#fff', padding: '15px', borderRadius: '8px', border: '1px solid #ddd', maxHeight: '82vh', overflowY: 'auto' }}>
-            <h3 style={{ margin: '0 0 15px 0', fontSize: '16px' }}>Katalog Menu</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '10px' }}>
-              {menuItems.map(item => {
-                const isUnavailable = item.stock <= 0 || !item.isAvailable;
-                return (
-                  <div 
-                    key={item.id} 
-                    onClick={() => addToCart(item)}
-                    style={{ 
-                      border: '1px solid #eee', padding: '10px', borderRadius: '8px', cursor: isUnavailable ? 'not-allowed' : 'pointer',
-                      opacity: isUnavailable ? 0.5 : 1, textAlign: 'center', transition: '0.2s', background: '#fff'
-                    }}
-                  >
-                    <div style={{ height: '75px', background: '#f4f4f4', marginBottom: '8px', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      {item.image_url ? (
-                        <img src={item.image_url} alt={item.name} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '4px' }} />
-                      ) : <span style={{ fontSize: '10px', color: '#aaa' }}>No Img</span>}
-                    </div>
-                    <strong style={{ fontSize: '13px', display: 'block', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{item.name}</strong>
-                    <span style={{ fontSize: '12px', color: '#28a745', fontWeight: 'bold' }}>Rp {item.price.toLocaleString('id-ID')}</span>
-                    <span style={{ fontSize: '11px', display: 'block', color: 'gray' }}>Stok: {item.stock}</span>
-                  </div>
-                );
-              })}
+        {/* AREA A: POS WALK-IN (70%) */}
+        <div style={{ flex: 7, display: 'flex', gap: '20px' }}>
+          <div style={{ flex: 1.3, background: '#fff', padding: '20px', borderRadius: '8px', border: '1px solid #ddd', maxHeight: '78vh', overflowY: 'auto' }}>
+            <h3 style={{ margin: '0 0 15px 0', fontSize: '16px', borderBottom: '2px solid #f0f0f0', paddingBottom: '8px' }}>Daftar Menu Restoran</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '12px' }}>
+              {menuItems.map(item => (
+                <div key={item.id} onClick={() => addToCart(item)} style={{ border: '1px solid #e0e0e0', padding: '12px', textAlign: 'center', borderRadius: '8px', cursor: 'pointer', backgroundColor: '#fafafa' }}>
+                  <strong style={{ fontSize: '14px', display: 'block', marginBottom: '5px' }}>{item.name}</strong>
+                  <span style={{ color: '#28a745', fontWeight: 'bold', fontSize: '13px' }}>Rp {item.price.toLocaleString('id-ID')}</span>
+                  <small style={{ display: 'block', color: '#888', fontSize: '11px', marginTop: '4px' }}>Stok: {item.stock}</small>
+                </div>
+              ))}
             </div>
           </div>
 
-          {/* Keranjang Kasir */}
-          <div style={{ flex: '1', background: '#fff', padding: '15px', borderRadius: '8px', border: '1px solid #ddd', boxSizing: 'border-box' }}>
-            <h3 style={{ margin: '0 0 15px 0', fontSize: '16px' }}>Keranjang Pesanan</h3>
+          <div style={{ flex: 1, background: '#fff', padding: '20px', borderRadius: '8px', border: '1px solid #ddd' }}>
+            <h3 style={{ margin: '0 0 15px 0', fontSize: '16px', borderBottom: '2px solid #f0f0f0', paddingBottom: '8px' }}>Detail Keranjang</h3>
             <form onSubmit={handlePayment}>
-              <div style={{ marginBottom: '12px' }}>
-                <input type="text" placeholder="Nama Pelanggan" required value={customerName} onChange={(e) => setCustomerName(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }} />
-                
-                <div style={{ display: 'flex', gap: '10px' }}>
-                  <select value={orderType} onChange={(e) => setOrderType(e.target.value)} style={{ flex: 1, padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }}>
-                    <option value="Dine In">Dine In</option>
-                    <option value="Takeaway">Takeaway</option>
-                  </select>
-                  
-                  {/* DROPDOWN METODE BAYAR */}
-                  <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} style={{ flex: 1, padding: '10px', borderRadius: '4px', border: '1px solid #007bff', background: '#eef6ff', fontWeight: 'bold' }}>
-                    <option value="Tunai">💰 Tunai</option>
-                    <option value="QRIS">📱 QRIS</option>
-                  </select>
-                </div>
+              <input type="text" placeholder="Input Nama Pelanggan" required value={customerName} onChange={e => setCustomerName(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}/>
+              <div style={{ display: 'flex', gap: '10px', marginBottom: '15px' }}>
+                <select value={orderType} onChange={e => setOrderType(e.target.value)} style={{ flex: 1, padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }}>
+                  <option value="Dine In">Dine In</option>
+                  <option value="Takeaway">Takeaway</option>
+                </select>
+                <select value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)} style={{ flex: 1, padding: '10px', borderRadius: '4px', border: '1px solid #007bff', background: '#f4f9ff', fontWeight: 'bold' }}>
+                  <option value="Tunai">💰 Tunai</option>
+                  <option value="QRIS">📱 Langsung QRIS</option>
+                </select>
               </div>
 
-              <div style={{ minHeight: '180px', maxHeight: '30vh', overflowY: 'auto', background: '#f9f9f9', padding: '10px', borderRadius: '4px', marginBottom: '12px', border: '1px solid #eee' }}>
+              <div style={{ minHeight: '160px', maxHeight: '28vh', overflowY: 'auto', background: '#fcfcfc', padding: '10px', borderRadius: '6px', marginBottom: '15px', border: '1px solid #eee' }}>
                 {cart.length === 0 ? (
-                  <p style={{ color: '#aaa', textAlign: 'center', marginTop: '60px', fontSize: '14px' }}>Keranjang kosong</p>
+                  <p style={{ color: '#bbb', textAlign: 'center', marginTop: '50px', fontSize: '13px' }}>Belum ada item terpilih</p>
                 ) : (
-                  cart.map(item => (
-                    <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', fontSize: '13px', alignItems: 'center', borderBottom: '1px solid #f0f0f0', paddingBottom: '8px' }}>
+                  cart.map(i => (
+                    <div key={i.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', paddingBottom: '6px', borderBottom: '1px solid #f5f5f5', fontSize: '13px' }}>
                       <div style={{ maxWidth: '55%' }}>
-                        <strong style={{ display: 'block' }}>{item.name}</strong>
-                        <span style={{ color: '#666', fontSize: '12px' }}>Rp {(item.price * item.quantity).toLocaleString('id-ID')}</span>
+                        <strong>{i.name}</strong>
+                        <div style={{ color: '#666', fontSize: '11px' }}>Rp {(i.price * i.quantity).toLocaleString('id-ID')}</div>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <button type="button" onClick={() => decreaseQuantity(item.id)} style={{ width: '24px', height: '24px', borderRadius: '4px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer', fontWeight: 'bold' }}>-</button>
-                        <span style={{ minWidth: '20px', textAlign: 'center', fontWeight: 'bold' }}>{item.quantity}</span>
-                        <button type="button" onClick={() => addToCart(item)} style={{ width: '24px', height: '24px', borderRadius: '4px', border: '1px solid #ccc', background: '#fff', cursor: 'pointer', fontWeight: 'bold' }}>+</button>
-                        <button type="button" onClick={() => removeFromCart(item.id)} style={{ background: 'transparent', border: 'none', color: '#dc3545', cursor: 'pointer', fontWeight: 'bold', marginLeft: '8px' }}>✕</button>
+                        <button type="button" onClick={() => decreaseQuantity(i.id)} style={{ padding: '3px 8px', borderRadius: '4px', border: '1px solid #ccc', background: '#fff' }}>-</button>
+                        <span style={{ fontWeight: 'bold' }}>{i.quantity}</span>
+                        <button type="button" onClick={() => addToCart(i)} style={{ padding: '3px 8px', borderRadius: '4px', border: '1px solid #ccc', background: '#fff' }}>+</button>
+                        <button type="button" onClick={() => removeFromCart(i.id)} style={{ background: 'transparent', border: 'none', color: '#dc3545', marginLeft: '4px' }}>✕</button>
                       </div>
                     </div>
                   ))
                 )}
               </div>
 
-              {/* AREA KALKULATOR PEMBAYARAN */}
-              <div style={{ marginBottom: '15px', borderTop: '2px dashed #ddd', paddingTop: '12px' }}>
+              <div style={{ borderTop: '2px dashed #e0e0e0', paddingTop: '12px', marginBottom: '15px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '16px', fontWeight: 'bold', marginBottom: '10px' }}>
-                  <span>Total Tagihan:</span>
-                  <span>Rp {totalAmount.toLocaleString('id-ID')}</span>
+                  <span>Total Bill:</span><span>Rp {totalAmount.toLocaleString('id-ID')}</span>
                 </div>
-                
                 {paymentMethod === 'Tunai' ? (
-                  // TAMPILAN JIKA TUNAI
                   <>
-                    <label style={{ display: 'block', fontSize: '12px', color: 'gray', marginBottom: '4px' }}>Uang Tunai Diterima:</label>
-                    <input type="number" required placeholder="Masukkan nominal pembayaran" value={cashReceived} onChange={(e) => setCashReceived(e.target.value)} style={{ width: '100%', padding: '10px', fontSize: '15px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box', marginBottom: '8px' }} />
-
+                    <label style={{ display: 'block', fontSize: '12px', color: '#666', marginBottom: '4px' }}>Nominal Uang Tunai:</label>
+                    <input type="number" required placeholder="Masukkan nominal uang" value={cashReceived} onChange={e => setCashReceived(e.target.value)} style={{ width: '100%', padding: '10px', fontSize: '14px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}/>
                     {cashReceived && (
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', color: change < 0 ? '#dc3545' : '#28a745', fontWeight: 'bold' }}>
-                        <span>{change < 0 ? 'Uang Kurang:' : 'Kembalian:'}</span>
-                        <span>Rp {Math.abs(change).toLocaleString('id-ID')}</span>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', marginTop: '8px', color: change < 0 ? '#dc3545' : '#28a745', fontWeight: 'bold' }}>
+                        <span>{change < 0 ? 'Uang Kurang:' : 'Kembalian:'}</span><span>Rp {Math.abs(change).toLocaleString('id-ID')}</span>
                       </div>
                     )}
                   </>
                 ) : (
-                  // TAMPILAN JIKA QRIS
-                  <div style={{ background: '#d1e7dd', color: '#0f5132', padding: '10px', borderRadius: '4px', textAlign: 'center', fontSize: '13px', fontWeight: 'bold' }}>
-                    Pastikan pelanggan sudah scan Akrilik QRIS Kasir dan saldo masuk sebelum memproses.
+                  <div style={{ padding: '10px', backgroundColor: '#e8f5e9', color: '#2e7d32', borderRadius: '6px', fontSize: '12px', textAlign: 'center' }}>
+                    Jendela QRIS Midtrans akan langsung terbuka otomatis.
                   </div>
                 )}
               </div>
-
-              <button type="submit" disabled={isProcessing || cart.length === 0 || (paymentMethod === 'Tunai' && change < 0)} style={{ width: '100%', padding: '12px', background: (cart.length === 0 || (paymentMethod === 'Tunai' && change < 0)) ? '#ccc' : '#007bff', color: 'white', border: 'none', borderRadius: '4px', fontSize: '15px', fontWeight: 'bold', cursor: (cart.length === 0 || (paymentMethod === 'Tunai' && change < 0)) ? 'not-allowed' : 'pointer' }}>
-                {isProcessing ? 'Memproses...' : `Proses Pembayaran ${paymentMethod}`}
+              <button type="submit" disabled={isProcessing || cart.length === 0 || (paymentMethod === 'Tunai' && change < 0)} style={{ width: '100%', padding: '14px', background: (cart.length === 0 || (paymentMethod === 'Tunai' && change < 0)) ? '#ccc' : (paymentMethod === 'QRIS' ? '#0288d1' : '#2e7d32'), color: 'white', border: 'none', borderRadius: '6px', fontSize: '15px', fontWeight: 'bold', cursor: 'pointer' }}>
+                {isProcessing ? '🔄 Menghubungkan...' : `Proses Transaksi ${paymentMethod}`}
               </button>
             </form>
           </div>
         </div>
 
-        {/* AREA B: ANTREAN MONITORING (30%) */}
-        <div style={{ flex: '3', background: '#f9f9f9', padding: '15px', borderRadius: '8px', border: '1px solid #ddd', maxHeight: '82vh', overflowY: 'auto', boxSizing: 'border-box' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-            <h3 style={{ margin: 0, fontSize: '16px' }}>Antrean Pesanan</h3>
-            <button onClick={fetchOrders} style={{ padding: '4px 8px', cursor: 'pointer', fontSize: '12px' }}>🔄 Refresh</button>
+        {/* AREA B: MONITOR ANTREAN (30%) */}
+        <div style={{ flex: 3, background: '#fdfdfd', padding: '20px', borderRadius: '8px', border: '1px solid #ddd', maxHeight: '78vh', overflowY: 'auto' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', borderBottom: '2px solid #f0f0f0', paddingBottom: '8px' }}>
+            <h3 style={{ margin: 0, fontSize: '16px' }}>Antrean Masuk</h3>
+            <button onClick={fetchOrders} style={{ padding: '4px 8px', fontSize: '12px', cursor: 'pointer' }}>🔄 Refresh</button>
           </div>
-          {isLoadingQueue ? (
-            <p style={{ fontSize: '14px' }}>Memuat antrean...</p>
-          ) : orders.length === 0 ? (
-            <p style={{ color: 'gray', textAlign: 'center', padding: '20px', fontSize: '14px' }}>Belum ada pesanan masuk.</p>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {orders.map((order) => (
-                <div key={order.id} style={{ background: 'white', padding: '12px', borderRadius: '6px', borderLeft: order.status === 'paid' ? '5px solid #ffc107' : '5px solid #28a745', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', alignItems: 'center' }}>
-                    <strong style={{ fontSize: '14px' }}>{order.customer_name}</strong>
-                    <span style={{ background: order.status === 'paid' ? '#fff3cd' : '#d4edda', color: order.status === 'paid' ? '#856404' : '#155724', padding: '2px 6px', borderRadius: '10px', fontSize: '11px', fontWeight: 'bold' }}>
-                      {order.status === 'paid' ? 'PERLU DISAJIKAN' : 'SELESAI'}
-                    </span>
+          {isLoadingQueue ? ( <p style={{ fontSize: '13px' }}>Memuat...</p> ) : orders.length === 0 ? ( <p style={{ color: '#999', textAlign: 'center', fontSize: '13px' }}>Belum ada pesanan.</p> ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {orders.map(o => (
+                <div key={o.id} style={{ background: '#fff', padding: '12px', borderRadius: '6px', border: '1px solid #e0e0e0', borderLeft: o.status === 'paid' ? '5px solid #ffc107' : '5px solid #28a745' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                    <strong style={{ fontSize: '13px' }}>{o.customer_name}</strong>
+                    <span style={{ fontSize: '11px', fontWeight: 'bold', padding: '2px 6px', borderRadius: '10px', background: o.status === 'paid' ? '#fff3cd' : '#d4edda', color: o.status === 'paid' ? '#856404' : '#155724' }}>{o.status === 'paid' ? 'ANTRE' : 'SELESAI'}</span>
                   </div>
-                  <div style={{ fontSize: '13px', color: '#555', marginBottom: '8px' }}>
-                    <p style={{ margin: '0 0 4px 0' }}>Tipe: <strong>{order.order_type}</strong></p>
-                    <p style={{ margin: '0 0 4px 0' }}>Total: <strong>Rp {order.total_amount.toLocaleString('id-ID')}</strong></p>
-                  </div>
-                  {order.status === 'paid' && (
-                    <button onClick={() => markAsCompleted(order.id)} style={{ width: '100%', padding: '6px', background: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}>
-                      Tandai Selesai
-                    </button>
-                  )}
+                  <div style={{ fontSize: '12px', color: '#666', marginBottom: '8px' }}>{o.order_type} | Rp {o.total_amount.toLocaleString('id-ID')}</div>
+                  {o.status === 'paid' && ( <button onClick={() => markAsCompleted(o.id)} style={{ width: '100%', padding: '6px', background: '#28a745', color: 'white', border: 'none', borderRadius: '4px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}>Tandai Selesai</button> )}
                 </div>
               ))}
             </div>
@@ -315,113 +273,82 @@ export default function Cashier() {
         </div>
       </div>
 
-      {/* ========================================================
-          MODAL STRUK DIGITAL
-      ============================================================ */}
+      {/* ================= MODAL STRUK BELANJA ================= */}
       {receiptData && (
-        <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000
-        }}>
-          <div style={{
-            background: '#f4f4f4', padding: '20px', borderRadius: '8px', width: '340px', 
-            boxShadow: '0 10px 25px rgba(0,0,0,0.3)', display: 'flex', flexDirection: 'column', alignItems: 'center'
-          }}>
-            
-            <div style={{ background: 'white', width: '100%', padding: '20px', boxSizing: 'border-box', boxShadow: '0 2px 5px rgba(0,0,0,0.1)' }}>
-              
-              <div ref={componentRef} style={{ 
-                fontFamily: "'Courier New', Courier, monospace", 
-                fontSize: '12px', 
-                color: '#000', 
-                width: '100%',
-                padding: '10px' 
-              }}>
-                <div style={{ textAlign: 'center', marginBottom: '15px' }}>
-                  <h2 style={{ margin: '0 0 5px 0', fontSize: '18px' }}>KAFE RESTO KITA</h2>
-                  <p style={{ margin: '0 0 2px 0' }}>Jl. Raya Merdeka, Malang</p>
-                  <p style={{ margin: 0 }}>Telp: 0812-3456-7890</p>
-                  <div style={{ borderBottom: '1px dashed #000', margin: '10px 0' }}></div>
-                </div>
-
-                <div style={{ marginBottom: '10px' }}>
-                  <table style={{ width: '100%', fontSize: '12px' }}>
-                    <tbody>
-                      <tr><td style={{ paddingBottom: '4px' }}>Tgl</td><td style={{ paddingBottom: '4px' }}>: {receiptData.date}</td></tr>
-                      <tr><td style={{ paddingBottom: '4px' }}>Kasir</td><td style={{ paddingBottom: '4px' }}>: {receiptData.cashierName}</td></tr>
-                      <tr><td style={{ paddingBottom: '4px' }}>Nama</td><td style={{ paddingBottom: '4px' }}>: {receiptData.customerName} ({receiptData.orderType})</td></tr>
-                    </tbody>
-                  </table>
-                  <div style={{ borderBottom: '1px dashed #000', margin: '10px 0' }}></div>
-                </div>
-
-                <div style={{ marginBottom: '10px' }}>
-                  <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse' }}>
-                    <tbody>
-                      {receiptData.items.map(item => (
-                        <tr key={item.id}>
-                          <td style={{ paddingBottom: '6px', verticalAlign: 'top' }}>
-                            <div style={{ fontWeight: 'bold' }}>{item.name}</div>
-                            <div>{item.quantity} x {item.price.toLocaleString('id-ID')}</div>
-                          </td>
-                          <td style={{ paddingBottom: '6px', textAlign: 'right', verticalAlign: 'bottom' }}>
-                            {(item.price * item.quantity).toLocaleString('id-ID')}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  <div style={{ borderBottom: '1px dashed #000', margin: '10px 0' }}></div>
-                </div>
-
-                <div style={{ marginBottom: '20px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                    <span>Total</span>
-                    <span>Rp {receiptData.totalAmount.toLocaleString('id-ID')}</span>
-                  </div>
-                  
-                  {/* TAMPILAN STRUK DINAMIS BERDASARKAN METODE PEMBAYARAN */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                    <span>Metode Bayar</span>
-                    <span>{receiptData.paymentMethod}</span>
-                  </div>
-                  
-                  {receiptData.paymentMethod === 'Tunai' ? (
-                    <>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                        <span>Tunai</span>
-                        <span>Rp {receiptData.cashReceived.toLocaleString('id-ID')}</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '14px', marginTop: '6px' }}>
-                        <span>Kembali</span>
-                        <span>Rp {receiptData.change.toLocaleString('id-ID')}</span>
-                      </div>
-                    </>
-                  ) : (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '14px', marginTop: '6px' }}>
-                      <span>Status</span>
-                      <span>LUNAS</span>
-                    </div>
-                  )}
-                </div>
-                
-                <div style={{ textAlign: 'center', marginTop: '20px' }}>
-                  <div style={{ borderBottom: '1px dashed #000', margin: '10px 0' }}></div>
-                  <p style={{ margin: '0 0 5px 0' }}>Terima Kasih Atas Kunjungan Anda</p>
-                  <p style={{ margin: 0, fontSize: '10px' }}>Powered by POS Resto</p>
-                  <p style={{ margin: '5px 0 0 0', fontSize: '10px', color: '#666' }}>ID: {receiptData.orderId.substring(0,8)}</p>
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div style={{ background: 'white', padding: '20px', borderRadius: '8px', width: '340px' }}>
+            <div style={{ background: '#fff', border: '1px solid #ccc', padding: '15px' }}>
+              <div ref={componentRef} style={{ fontFamily: "'Courier New', Courier, monospace", fontSize: '12px', color: '#000' }}>
+                <div style={{ textAlign: 'center' }}><strong>KAFE RESTO KITA</strong><br/>===============================</div>
+                <p>Nama  : {receiptData.customerName}<br/>Metode: {receiptData.paymentMethod}</p>
+                {receiptData.items.map(i => <div key={i.id} style={{ display: 'flex', justifyContent: 'space-between' }}><span>{i.name} x{i.quantity}</span><span>{(i.price * i.quantity).toLocaleString()}</span></div>)}
+                <div style={{ borderTop: '1px dashed #000', marginTop: '10px', paddingTop: '5px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><strong>TOTAL:</strong><strong>Rp {receiptData.totalAmount.toLocaleString()}</strong></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>KEMBALI:</span><span>Rp {receiptData.change.toLocaleString()}</span></div>
                 </div>
               </div>
+            </div>
+            <div style={{ marginTop: '15px', display: 'flex', gap: '10px' }}>
+              <button onClick={handlePrintReceipt} style={{ flex: 1, padding: '10px', background: '#007bff', color: 'white', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' }}>🖨️ Cetak</button>
+              <button onClick={() => setReceiptData(null)} style={{ flex: 1, padding: '10px', background: '#6c757d', color: 'white', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' }}>Tutup</button>
+            </div>
+          </div>
+        </div>
+      )}
 
+      {/* ========================================================
+          MODAL DUA: INTERNAL QR CODE GENERATOR MANAGER
+      ============================================================ */}
+      {showQrManager && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000 }}>
+          <div style={{ background: 'white', padding: '25px', borderRadius: '8px', width: '650px', maxHeight: '85vh', display: 'flex', flexDirection: 'column', boxShadow: '0 5px 20px rgba(0,0,0,0.3)' }}>
+            
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', borderBottom: '1px solid #eee', paddingBottom: '10px' }}>
+              <h3 style={{ margin: 0 }}>Alat Generator Cetak QR Meja Restoran</h3>
+              <button onClick={() => setShowQrManager(false)} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', fontWeight: 'bold' }}>✕</button>
             </div>
 
-            <div style={{ marginTop: '20px', display: 'flex', gap: '10px', width: '100%' }}>
-              <button onClick={handlePrint} style={{ flex: 1, padding: '12px', background: '#007bff', color: 'white', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' }}>
-                🖨️ Cetak Struk
+            <div style={{ display: 'flex', gap: '15px', marginBottom: '20px', alignItems: 'center' }}>
+              <label style={{ fontSize: '14px', fontWeight: 'bold' }}>Jumlah Meja di Restoran:</label>
+              <input 
+                type="number" min="1" max="50" value={inputJumlahMeja} 
+                onChange={(e) => setInputJumlahMeja(parseInt(e.target.value, 10) || 1)}
+                style={{ width: '80px', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', fontSize: '15px', textAlign: 'center' }}
+              />
+              <button onClick={handlePrintQrCodes} style={{ background: '#28a745', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer', marginLeft: 'auto' }}>
+                🖨️ Cetak Semua QR Meja
               </button>
-              <button onClick={() => setReceiptData(null)} style={{ flex: 1, padding: '12px', background: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' }}>
-                Tutup
-              </button>
+            </div>
+
+            {/* AREA PREVIEW TAMPILAN QR YANG AKAN DI-PRINT */}
+            <div style={{ flex: 1, overflowY: 'auto', background: '#f9f9f9', padding: '15px', borderRadius: '6px', border: '1px solid #eee' }}>
+              <div ref={qrPrintRef} style={{ 
+                background: 'white', padding: '20px', display: 'grid', 
+                gridTemplateColumns: 'repeat(2, 1fr)', gap: '30px', justifyContent: 'center'
+              }}>
+                {Array.from({ length: inputJumlahMeja }, (_, index) => {
+                  const nomorMeja = index + 1;
+                  // LINK SEKARANG DIKUNCI MATI KE DOMAIN VERCEL UTAMA
+                  const targetUrl = `${baseUrl}/?menu=true&table=${nomorMeja}`;
+                  
+                  return (
+                    <div key={nomorMeja} style={{ 
+                      border: '2px dashed #000', padding: '20px', textAlign: 'center', 
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', backgroundColor: '#fff',
+                      pageBreakInside: 'avoid' 
+                    }}>
+                      <span style={{ fontFamily: 'monospace', fontSize: '14px', fontWeight: 'bold', marginBottom: '5px', letterSpacing: '1px' }}>SELAMAT DATANG</span>
+                      <strong style={{ fontSize: '18px', marginBottom: '12px' }}>MEJA NOMOR {nomorMeja}</strong>
+                      
+                      <QRCodeSVG value={targetUrl} size={130} level={"H"} includeMargin={true} />
+                      
+                      <p style={{ fontSize: '11px', color: '#555', marginTop: '10px', marginBottom: 0, fontFamily: 'monospace' }}>
+                        Scan untuk Memesan & Membayar
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
           </div>
