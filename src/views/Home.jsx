@@ -22,7 +22,7 @@ export default function Home() {
           <p style={{ color: 'var(--gray-800)', marginTop: '0.5rem', fontSize: '0.9rem' }}>Pesan menu via Mobile</p>
         </Link>
 
-        <Link to="/kitchen" className="card" style={{ width: '250px', display: 'flex', flexDirection: 'column', alignItems: 'center', textDecoration: 'none', transition: 'transform 0.2s' }}
+        <Link to="/login" className="card" style={{ width: '250px', display: 'flex', flexDirection: 'column', alignItems: 'center', textDecoration: 'none', transition: 'transform 0.2s' }}
           onMouseEnter={(e) => e.currentTarget.style.transform = 'translateY(-5px)'}
           onMouseLeave={(e) => e.currentTarget.style.transform = 'translateY(0)'}>
           <div style={{ background: 'var(--background-light)', padding: '1.5rem', borderRadius: '50%', marginBottom: '1rem' }}>

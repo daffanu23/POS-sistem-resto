@@ -7,6 +7,7 @@ import Kitchen from './views/Kitchen';
 import Cashier from './views/Cashier';
 import { Home as HomeIcon } from 'lucide-react';
 import './App.css'; // You can remove this or use it for additional global styles
+import Login from './views/Login';
 
 const Header = () => {
   const location = useLocation();
@@ -33,6 +34,7 @@ function App() {
               <Route path="/mobile" element={<MobileCustomer />} />
               <Route path="/kitchen" element={<Kitchen />} />
               <Route path="/cashier" element={<Cashier />} />
+              <Route path="/login" element={<Login />} />
             </Routes>
           </main>
         </div>

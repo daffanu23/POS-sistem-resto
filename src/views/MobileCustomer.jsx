@@ -10,8 +10,8 @@ export default function MobileCustomer() {
   const [orderType, setOrderType] = useState('Dine In');
   const [orderSuccess, setOrderSuccess] = useState(false);
 
-  // Only show available items with stock > 0
-  const availableItems = menuItems.filter(item => item.isAvailable && item.stock > 0);
+  // KITA TIDAK LAGI MEMFILTER MENU, SEMUA MENU DITAMPILKAN
+  // const availableItems = menuItems.filter(item => item.isAvailable && item.stock > 0);
 
   const addToCart = (item) => {
     setCart(prev => {
@@ -70,31 +70,87 @@ export default function MobileCustomer() {
       {!isCheckout ? (
         <>
           <div className="grid-cards">
-            {availableItems.map(item => (
-              <div key={item.id} className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-                <div>
-                  <h3 style={{ fontSize: '1.2rem', marginBottom: '0.25rem' }}>{item.name}</h3>
-                  <p style={{ color: 'var(--primary-color)', fontWeight: 'bold' }}>Rp {item.price.toLocaleString('id-ID')}</p>
-                  <p style={{ fontSize: '0.8rem', color: 'var(--gray-800)', marginTop: '0.5rem' }}>
-                    Sisa stok: {item.stock}
-                  </p>
-                </div>
+            {/* SEKARANG KITA MENGGUNAKAN menuItems, BUKAN availableItems */}
+            {menuItems.map(item => {
+              // LOGIKA BARU: Cek apakah menu habis atau dimatikan dari dapur
+              const isUnavailable = !item.isAvailable || item.stock <= 0;
 
-                <div style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  {cart.find(c => c.id === item.id) ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', background: 'var(--gray-200)', borderRadius: '8px', padding: '0.25rem' }}>
-                      <button onClick={() => removeFromCart(item.id)} style={{ padding: '0.25rem', background: 'white', color: 'var(--danger)' }}><Minus size={16} /></button>
-                      <span style={{ fontWeight: 'bold', width: '20px', textAlign: 'center' }}>{cart.find(c => c.id === item.id).quantity}</span>
-                      <button onClick={() => addToCart(item)} style={{ padding: '0.25rem', background: 'white', color: 'var(--success)' }} disabled={cart.find(c => c.id === item.id).quantity >= item.stock}><Plus size={16} /></button>
-                    </div>
-                  ) : (
-                    <button className="btn-primary" style={{ width: '100%' }} onClick={() => addToCart(item)}>
-                      Tambah
-                    </button>
-                  )}
+              return (
+                <div key={item.id} className="card" style={{ 
+                  display: 'flex', 
+                  flexDirection: 'column', 
+                  justifyContent: 'space-between', 
+                  padding: '1rem',
+                  // EFEK ABU-ABU JIKA TIDAK TERSEDIA
+                  filter: isUnavailable ? 'grayscale(100%) opacity(60%)' : 'none',
+                  pointerEvents: isUnavailable ? 'none' : 'auto' // Mencegah interaksi jika tidak tersedia
+                }}>
+                  <div>
+                    {/* TAMPILAN GAMBAR PRODUK */}
+                    {item.image_url ? (
+                      <img 
+                        src={item.image_url} 
+                        alt={item.name} 
+                        style={{ 
+                          width: '100%', 
+                          height: '160px', 
+                          objectFit: 'cover', 
+                          borderRadius: '8px', 
+                          marginBottom: '1rem' 
+                        }} 
+                      />
+                    ) : (
+                      <div style={{ 
+                        width: '100%', 
+                        height: '160px', 
+                        backgroundColor: '#f3f4f6', 
+                        borderRadius: '8px', 
+                        marginBottom: '1rem', 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'center', 
+                        color: '#9ca3af',
+                        fontSize: '0.9rem'
+                      }}>
+                        Tidak ada gambar
+                      </div>
+                    )}
+
+                    <h3 style={{ fontSize: '1.2rem', marginBottom: '0.25rem' }}>{item.name}</h3>
+                    <p style={{ color: 'var(--primary-color)', fontWeight: 'bold' }}>Rp {item.price.toLocaleString('id-ID')}</p>
+                    
+                    {/* INDIKATOR STOK / HABIS */}
+                    <p style={{ 
+                      fontSize: '0.8rem', 
+                      color: isUnavailable ? 'red' : 'var(--gray-800)', 
+                      marginTop: '0.5rem',
+                      fontWeight: isUnavailable ? 'bold' : 'normal'
+                    }}>
+                      {isUnavailable ? 'Habis / Tidak Tersedia' : `Sisa stok: ${item.stock}`}
+                    </p>
+                  </div>
+
+                  <div style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    {/* JIKA HABIS, TAMPILKAN TOMBOL DISABLED */}
+                    {isUnavailable ? (
+                      <button disabled style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: 'none', background: '#ccc', color: '#666', fontWeight: 'bold' }}>
+                        Habis
+                      </button>
+                    ) : cart.find(c => c.id === item.id) ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', background: 'var(--gray-200)', borderRadius: '8px', padding: '0.25rem' }}>
+                        <button onClick={() => removeFromCart(item.id)} style={{ padding: '0.25rem', background: 'white', color: 'var(--danger)', borderRadius: '4px', border: 'none' }}><Minus size={16} /></button>
+                        <span style={{ fontWeight: 'bold', width: '20px', textAlign: 'center' }}>{cart.find(c => c.id === item.id).quantity}</span>
+                        <button onClick={() => addToCart(item)} style={{ padding: '0.25rem', background: 'white', color: 'var(--success)', borderRadius: '4px', border: 'none' }} disabled={cart.find(c => c.id === item.id).quantity >= item.stock}><Plus size={16} /></button>
+                      </div>
+                    ) : (
+                      <button className="btn-primary" style={{ width: '100%' }} onClick={() => addToCart(item)}>
+                        Tambah
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {cart.length > 0 && (
