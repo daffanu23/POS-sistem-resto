@@ -9,6 +9,7 @@ export default function MobileCustomer() {
   const [customerName, setCustomerName] = useState('');
   const [orderType, setOrderType] = useState('Dine In');
   const [orderSuccess, setOrderSuccess] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   // KITA TIDAK LAGI MEMFILTER MENU, SEMUA MENU DITAMPILKAN
   // const availableItems = menuItems.filter(item => item.isAvailable && item.stock > 0);
@@ -37,17 +38,29 @@ export default function MobileCustomer() {
   const getCartCount = () => cart.reduce((sum, item) => sum + item.quantity, 0);
   const getCartTotal = () => cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
-  const handleCheckout = (e) => {
-    e.preventDefault();
-    if (!customerName) {
-      alert("Masukkan nama terlebih dahulu");
-      return;
-    }
-    placeOrder(cart, orderType, customerName);
+  const handleCheckout = async (e) => {
+  e.preventDefault();
+  if (!customerName) {
+    alert("Masukkan nama terlebih dahulu");
+    return;
+  }
+
+  // 1. Nyalakan mode loading
+  setIsProcessing(true); 
+
+  // 2. Tunggu proses Midtrans selesai dan ambil hasil (true/false)
+  const isPaymentSuccess = await placeOrder(cart, orderType, customerName);
+
+  // 3. Matikan mode loading
+  setIsProcessing(false); 
+
+  // 4. Jika hasil Midtrans SUKSES, baru pindah ke layar "Pesanan Berhasil"
+  if (isPaymentSuccess) {
     setOrderSuccess(true);
     setCart([]);
     setIsCheckout(false);
-  };
+  }
+};
 
   if (orderSuccess) {
     return (
@@ -215,7 +228,9 @@ export default function MobileCustomer() {
 
             <div style={{ display: 'flex', gap: '1rem' }}>
               <button type="button" className="btn-secondary" style={{ flex: 1 }} onClick={() => setIsCheckout(false)}>Kembali</button>
-              <button type="submit" className="btn-primary" style={{ flex: 2 }}>Pesan Sekarang</button>
+              <button type="submit" className="btn-primary" style={{ flex: 2 }} disabled={isProcessing}>
+                {isProcessing ? 'Memuat Pembayaran...' : 'Pesan Sekarang'}
+              </button>
             </div>
           </form>
         </div>

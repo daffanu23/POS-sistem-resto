@@ -159,27 +159,26 @@ export const StoreProvider = ({ children }) => {
     }
   };
 
-  // 5. Fungsi Place Order (Dari Web Pelanggan ke Database)
+// 5. Fungsi Place Order & Midtrans (Versi Promise & Await)
   const placeOrder = async (cartItems, type, customerName) => {
     try {
-      // Hitung total harga dari keranjang
       const totalAmount = cartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
 
-      // 1. Buat kepala pesanan di tabel 'orders'
+      // 1. Buat pesanan dengan status 'pending'
       const { data: orderData, error: orderError } = await supabase
         .from('orders')
         .insert([{
           customer_name: customerName,
           order_type: type,
           total_amount: totalAmount,
-          status: 'pending_payment'
+          status: 'pending'
         }])
-        .select() // .select() wajib dipanggil agar Supabase mengembalikan ID pesanan yang baru dibuat
+        .select()
         .single();
 
       if (orderError) throw orderError;
 
-      // 2. Siapkan detail item yang dipesan
+      // 2. Masukkan item-item ke order_items
       const orderItemsData = cartItems.map(item => ({
         order_id: orderData.id,
         product_id: item.id,
@@ -187,18 +186,51 @@ export const StoreProvider = ({ children }) => {
         subtotal: item.price * item.quantity
       }));
 
-      // 3. Masukkan item-item tersebut ke tabel 'order_items'
       const { error: itemsError } = await supabase
         .from('order_items')
         .insert(orderItemsData);
 
       if (itemsError) throw itemsError;
 
-      console.log('Pesanan berhasil dibuat dengan ID:', orderData.id);
+      // 3. Panggil backend Midtrans
+      const { data: midtransData, error: functionError } = await supabase.functions.invoke('create-payment', {
+        body: {
+          order_id: orderData.id,
+          gross_amount: totalAmount,
+          customer_name: customerName
+        }
+      });
+
+      if (functionError) throw functionError;
+
+      // 4. Buka Popup Pembayaran & Jadikan Promise agar halaman pelanggan bisa menunggu
+      return new Promise((resolve) => {
+        window.snap.pay(midtransData.token, {
+          onSuccess: async function (result) {
+            // Pelanggan selesai bayar -> Update database ke 'paid'
+            await supabase.from('orders').update({ status: 'paid' }).eq('id', orderData.id);
+            fetchMenu(); // Refresh stok dapur
+            resolve(true); // Beritahu halaman pelanggan bahwa ini SUKSES
+          },
+          onPending: function (result) {
+            alert("Menunggu pembayaran Anda diselesaikan!");
+            resolve(false); 
+          },
+          onError: function (result) {
+            alert("Pembayaran Gagal!");
+            resolve(false);
+          },
+          onClose: function () {
+            alert("Anda menutup halaman pembayaran sebelum selesai.");
+            resolve(false); // Beritahu halaman pelanggan ini BATAL
+          }
+        });
+      });
 
     } catch (error) {
-      console.error('Gagal membuat pesanan:', error.message);
-      alert('Terjadi kesalahan saat memproses pesanan. Silakan coba lagi.');
+      console.error('Gagal memproses pesanan:', error.message);
+      alert('Terjadi kesalahan saat memproses pesanan. Coba lagi.');
+      return false;
     }
   };
 
