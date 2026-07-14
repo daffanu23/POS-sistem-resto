@@ -1,31 +1,29 @@
 import React, { useContext } from 'react';
 import { StoreContext } from '../context/StoreContext';
-import { Navigate } from 'react-router-dom';
 
 export default function Login() {
-  const { user, userRole, signInWithGoogle, loading } = useContext(StoreContext);
-
-  // Jika masih loading ngecek sesi, tampilkan kosong
-  if (loading) return <div className="container">Loading...</div>;
-
-  // Jika sudah login, otomatis arahkan sesuai rolenya
-  if (user) {
-    if (userRole === 'kitchen') return <Navigate to="/kitchen" />;
-    if (userRole === 'cashier' || userRole === 'admin') return <Navigate to="/cashier" />;
-    return <Navigate to="/" />; // Fallback
-  }
+  const { signInWithGoogle } = useContext(StoreContext);
 
   return (
-    <div className="container" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: '100px' }}>
-      <h2>Login Pegawai Cafeifa</h2>
-      <p style={{ marginBottom: '20px', color: 'gray' }}>Gunakan akun Google Anda untuk masuk</p>
+    <div style={{ padding: '50px 20px', textAlign: 'center', maxWidth: '400px', margin: '100px auto', border: '1px solid #ddd', borderRadius: '8px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
+      <h2 style={{ marginBottom: '10px' }}>POS Resto</h2>
+      <p style={{ color: 'gray', marginBottom: '30px' }}>Silakan masuk untuk mengakses sistem</p>
       
       <button 
-        className="btn-primary" 
-        onClick={signInWithGoogle}
-        style={{ padding: '10px 20px', fontSize: '1.1rem' }}
+        onClick={signInWithGoogle} 
+        style={{ 
+          padding: '12px 20px', 
+          background: '#4285F4', 
+          color: 'white', 
+          border: 'none', 
+          borderRadius: '4px', 
+          cursor: 'pointer',
+          width: '100%',
+          fontSize: '16px',
+          fontWeight: 'bold'
+        }}
       >
-        Lanjutkan dengan Google
+        Login dengan Google
       </button>
     </div>
   );

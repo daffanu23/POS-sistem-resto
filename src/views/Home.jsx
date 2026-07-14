@@ -1,47 +1,44 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
-import { Coffee, ChefHat, Monitor } from 'lucide-react';
+import React, { useContext } from 'react';
+import { StoreContext } from '../context/StoreContext';
+import Login from './Login';
+import Kitchen from './Kitchen';
+import Cashier from './Cashier';
+import MobileCustomer from './MobileCustomer';
 
 export default function Home() {
-  return (
-    <div className="container" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center' }}>
-      <Coffee size={64} color="var(--primary-color)" style={{ marginBottom: '1rem' }} />
-      <h1 style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>Cafeifa</h1>
-      <p style={{ fontSize: '1.2rem', color: 'var(--gray-800)', marginBottom: '3rem' }}>
-        Pilih peran Anda untuk masuk ke sistem
-      </p>
+  const { user, userRole, loading } = useContext(StoreContext);
 
-      <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap', justifyContent: 'center' }}>
-        <Link to="/mobile" className="card" style={{ width: '250px', display: 'flex', flexDirection: 'column', alignItems: 'center', textDecoration: 'none', transition: 'transform 0.2s' }}
-          onMouseEnter={(e) => e.currentTarget.style.transform = 'translateY(-5px)'}
-          onMouseLeave={(e) => e.currentTarget.style.transform = 'translateY(0)'}>
-          <div style={{ background: 'var(--background-light)', padding: '1.5rem', borderRadius: '50%', marginBottom: '1rem' }}>
-            <Monitor size={48} color="var(--primary-light)" />
-          </div>
-          <h2>Pelanggan</h2>
-          <p style={{ color: 'var(--gray-800)', marginTop: '0.5rem', fontSize: '0.9rem' }}>Pesan menu via Mobile</p>
-        </Link>
+  // MEMBACA LINK URL: Apakah ada kata "?menu=true"?
+  const queryParams = new URLSearchParams(window.location.search);
+  const isCustomerMenu = queryParams.get('menu') === 'true';
 
-        <Link to="/login" className="card" style={{ width: '250px', display: 'flex', flexDirection: 'column', alignItems: 'center', textDecoration: 'none', transition: 'transform 0.2s' }}
-          onMouseEnter={(e) => e.currentTarget.style.transform = 'translateY(-5px)'}
-          onMouseLeave={(e) => e.currentTarget.style.transform = 'translateY(0)'}>
-          <div style={{ background: 'var(--background-light)', padding: '1.5rem', borderRadius: '50%', marginBottom: '1rem' }}>
-            <ChefHat size={48} color="var(--primary-light)" />
-          </div>
-          <h2>Dapur</h2>
-          <p style={{ color: 'var(--gray-800)', marginTop: '0.5rem', fontSize: '0.9rem' }}>Update stok & status menu</p>
-        </Link>
-
-        <Link to="/cashier" className="card" style={{ width: '250px', display: 'flex', flexDirection: 'column', alignItems: 'center', textDecoration: 'none', transition: 'transform 0.2s' }}
-          onMouseEnter={(e) => e.currentTarget.style.transform = 'translateY(-5px)'}
-          onMouseLeave={(e) => e.currentTarget.style.transform = 'translateY(0)'}>
-          <div style={{ background: 'var(--background-light)', padding: '1.5rem', borderRadius: '50%', marginBottom: '1rem' }}>
-            <Coffee size={48} color="var(--primary-light)" />
-          </div>
-          <h2>Kasir / Admin</h2>
-          <p style={{ color: 'var(--gray-800)', marginTop: '0.5rem', fontSize: '0.9rem' }}>Kelola pesanan & pembayaran</p>
-        </Link>
+  if (loading) {
+    return (
+      <div style={{ textAlign: 'center', marginTop: '20vh' }}>
+        <h3>Memuat sistem...</h3>
       </div>
-    </div>
-  );
+    );
+  }
+
+  // Jika belum login...
+  if (!user) {
+    // ...tapi link-nya adalah link pelanggan (hasil scan QR), langsung buka Etalase!
+    if (isCustomerMenu) {
+      return <MobileCustomer />;
+    }
+    // ...jika link biasa, berarti ini pegawai yang mau masuk, tampilkan Login.
+    return <Login />;
+  }
+
+  // Jika sudah login, arahkan sesuai rolenya
+  if (userRole === 'kitchen') {
+    return <Kitchen />;
+  }
+
+  if (userRole === 'cashier') {
+    return <Cashier />;
+  }
+
+  // Default fallback
+  return <MobileCustomer />;
 }
