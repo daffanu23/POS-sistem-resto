@@ -1,7 +1,7 @@
 import React, { useContext, useEffect, useState, useRef } from 'react';
 import { StoreContext } from '../context/StoreContext';
 import { supabase } from '../supabaseClient'; 
-import { useReactToPrint } from 'react-to-print'; // IMPORT LIBRARY BARU
+import { useReactToPrint } from 'react-to-print'; 
 
 export default function Cashier() {
   const { user, signOut, menuItems } = useContext(StoreContext);
@@ -14,13 +14,14 @@ export default function Cashier() {
   const [cart, setCart] = useState([]);
   const [customerName, setCustomerName] = useState('');
   const [orderType, setOrderType] = useState('Dine In');
+  const [paymentMethod, setPaymentMethod] = useState('Tunai'); // STATE BARU: Metode Bayar
   const [cashReceived, setCashReceived] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
 
   // State Struk
   const [receiptData, setReceiptData] = useState(null);
   
-  // REFERENSI UNTUK REACT-TO-PRINT
+  // Ref Print
   const componentRef = useRef();
 
   useEffect(() => {
@@ -82,13 +83,13 @@ export default function Cashier() {
   };
 
   const totalAmount = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-  const change = cashReceived ? parseInt(cashReceived, 10) - totalAmount : 0;
+  const change = (paymentMethod === 'Tunai' && cashReceived) ? parseInt(cashReceived, 10) - totalAmount : 0;
 
-  const handleCashPayment = async (e) => {
+  const handlePayment = async (e) => {
     e.preventDefault();
     if (!customerName) return alert("Masukkan nama pelanggan terlebih dahulu!");
     if (cart.length === 0) return alert("Keranjang masih kosong!");
-    if (!cashReceived || change < 0) return alert("Jumlah uang tunai kurang!");
+    if (paymentMethod === 'Tunai' && (!cashReceived || change < 0)) return alert("Jumlah uang tunai kurang!");
 
     setIsProcessing(true);
     try {
@@ -115,21 +116,25 @@ export default function Cashier() {
       const { error: itemsError } = await supabase.from('order_items').insert(orderItemsData);
       if (itemsError) throw itemsError;
 
+      // SET DATA STRUK
       setReceiptData({
         orderId: orderData.id,
         customerName: customerName,
         orderType: orderType,
+        paymentMethod: paymentMethod, // Simpan metode bayar
         cashierName: user?.user_metadata?.full_name || 'Kasir',
         items: [...cart],
         totalAmount: totalAmount,
-        cashReceived: parseInt(cashReceived, 10),
-        change: change,
+        cashReceived: paymentMethod === 'Tunai' ? parseInt(cashReceived, 10) : totalAmount, // Jika QRIS, anggap uang diterima pas
+        change: paymentMethod === 'Tunai' ? change : 0,
         date: new Date().toLocaleString('id-ID')
       });
 
+      // Reset
       setCart([]);
       setCustomerName('');
       setCashReceived('');
+      setPaymentMethod('Tunai'); // Reset ke default Tunai
       fetchOrders(); 
 
     } catch (error) {
@@ -140,9 +145,8 @@ export default function Cashier() {
     }
   };
 
-// FUNGSI CETAK DARI REACT-TO-PRINT YANG BARU (Versi 3+)
   const handlePrint = useReactToPrint({
-    contentRef: componentRef, // <--- Baris ini yang diubah
+    contentRef: componentRef,
     documentTitle: `Struk_${receiptData?.customerName || 'Pelanggan'}`,
     onAfterPrint: () => console.log('Berhasil mencetak struk!'),
   });
@@ -201,13 +205,22 @@ export default function Cashier() {
           {/* Keranjang Kasir */}
           <div style={{ flex: '1', background: '#fff', padding: '15px', borderRadius: '8px', border: '1px solid #ddd', boxSizing: 'border-box' }}>
             <h3 style={{ margin: '0 0 15px 0', fontSize: '16px' }}>Keranjang Pesanan</h3>
-            <form onSubmit={handleCashPayment}>
+            <form onSubmit={handlePayment}>
               <div style={{ marginBottom: '12px' }}>
                 <input type="text" placeholder="Nama Pelanggan" required value={customerName} onChange={(e) => setCustomerName(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '8px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }} />
-                <select value={orderType} onChange={(e) => setOrderType(e.target.value)} style={{ width: '100%', padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }}>
-                  <option value="Dine In">Dine In</option>
-                  <option value="Takeaway">Takeaway</option>
-                </select>
+                
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <select value={orderType} onChange={(e) => setOrderType(e.target.value)} style={{ flex: 1, padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }}>
+                    <option value="Dine In">Dine In</option>
+                    <option value="Takeaway">Takeaway</option>
+                  </select>
+                  
+                  {/* DROPDOWN METODE BAYAR */}
+                  <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} style={{ flex: 1, padding: '10px', borderRadius: '4px', border: '1px solid #007bff', background: '#eef6ff', fontWeight: 'bold' }}>
+                    <option value="Tunai">💰 Tunai</option>
+                    <option value="QRIS">📱 QRIS</option>
+                  </select>
+                </div>
               </div>
 
               <div style={{ minHeight: '180px', maxHeight: '30vh', overflowY: 'auto', background: '#f9f9f9', padding: '10px', borderRadius: '4px', marginBottom: '12px', border: '1px solid #eee' }}>
@@ -231,24 +244,36 @@ export default function Cashier() {
                 )}
               </div>
 
+              {/* AREA KALKULATOR PEMBAYARAN */}
               <div style={{ marginBottom: '15px', borderTop: '2px dashed #ddd', paddingTop: '12px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '16px', fontWeight: 'bold', marginBottom: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '16px', fontWeight: 'bold', marginBottom: '10px' }}>
                   <span>Total Tagihan:</span>
                   <span>Rp {totalAmount.toLocaleString('id-ID')}</span>
                 </div>
-                <label style={{ display: 'block', fontSize: '12px', color: 'gray', marginBottom: '4px' }}>Uang Tunai Diterima:</label>
-                <input type="number" required placeholder="Masukkan nominal pembayaran" value={cashReceived} onChange={(e) => setCashReceived(e.target.value)} style={{ width: '100%', padding: '10px', fontSize: '15px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box', marginBottom: '8px' }} />
+                
+                {paymentMethod === 'Tunai' ? (
+                  // TAMPILAN JIKA TUNAI
+                  <>
+                    <label style={{ display: 'block', fontSize: '12px', color: 'gray', marginBottom: '4px' }}>Uang Tunai Diterima:</label>
+                    <input type="number" required placeholder="Masukkan nominal pembayaran" value={cashReceived} onChange={(e) => setCashReceived(e.target.value)} style={{ width: '100%', padding: '10px', fontSize: '15px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box', marginBottom: '8px' }} />
 
-                {cashReceived && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', color: change < 0 ? '#dc3545' : '#28a745', fontWeight: 'bold' }}>
-                    <span>{change < 0 ? 'Uang Kurang:' : 'Kembalian:'}</span>
-                    <span>Rp {Math.abs(change).toLocaleString('id-ID')}</span>
+                    {cashReceived && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', color: change < 0 ? '#dc3545' : '#28a745', fontWeight: 'bold' }}>
+                        <span>{change < 0 ? 'Uang Kurang:' : 'Kembalian:'}</span>
+                        <span>Rp {Math.abs(change).toLocaleString('id-ID')}</span>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  // TAMPILAN JIKA QRIS
+                  <div style={{ background: '#d1e7dd', color: '#0f5132', padding: '10px', borderRadius: '4px', textAlign: 'center', fontSize: '13px', fontWeight: 'bold' }}>
+                    Pastikan pelanggan sudah scan Akrilik QRIS Kasir dan saldo masuk sebelum memproses.
                   </div>
                 )}
               </div>
 
-              <button type="submit" disabled={isProcessing || cart.length === 0 || change < 0} style={{ width: '100%', padding: '12px', background: (cart.length === 0 || change < 0) ? '#ccc' : '#007bff', color: 'white', border: 'none', borderRadius: '4px', fontSize: '15px', fontWeight: 'bold', cursor: (cart.length === 0 || change < 0) ? 'not-allowed' : 'pointer' }}>
-                {isProcessing ? 'Memproses...' : 'Proses Pembayaran Tunai'}
+              <button type="submit" disabled={isProcessing || cart.length === 0 || (paymentMethod === 'Tunai' && change < 0)} style={{ width: '100%', padding: '12px', background: (cart.length === 0 || (paymentMethod === 'Tunai' && change < 0)) ? '#ccc' : '#007bff', color: 'white', border: 'none', borderRadius: '4px', fontSize: '15px', fontWeight: 'bold', cursor: (cart.length === 0 || (paymentMethod === 'Tunai' && change < 0)) ? 'not-allowed' : 'pointer' }}>
+                {isProcessing ? 'Memproses...' : `Proses Pembayaran ${paymentMethod}`}
               </button>
             </form>
           </div>
@@ -291,7 +316,7 @@ export default function Cashier() {
       </div>
 
       {/* ========================================================
-          MODAL STRUK DIGITAL (DENGAN REACT-TO-PRINT)
+          MODAL STRUK DIGITAL
       ============================================================ */}
       {receiptData && (
         <div style={{
@@ -303,7 +328,6 @@ export default function Cashier() {
             boxShadow: '0 10px 25px rgba(0,0,0,0.3)', display: 'flex', flexDirection: 'column', alignItems: 'center'
           }}>
             
-            {/* INI ADALAH KOMPONEN YANG AKAN DI-PRINT (DISIMPAN DI DALAM REF) */}
             <div style={{ background: 'white', width: '100%', padding: '20px', boxSizing: 'border-box', boxShadow: '0 2px 5px rgba(0,0,0,0.1)' }}>
               
               <div ref={componentRef} style={{ 
@@ -311,7 +335,7 @@ export default function Cashier() {
                 fontSize: '12px', 
                 color: '#000', 
                 width: '100%',
-                padding: '10px' // Padding agar saat diprint tidak mepet tepi kertas
+                padding: '10px' 
               }}>
                 <div style={{ textAlign: 'center', marginBottom: '15px' }}>
                   <h2 style={{ margin: '0 0 5px 0', fontSize: '18px' }}>KAFE RESTO KITA</h2>
@@ -355,14 +379,30 @@ export default function Cashier() {
                     <span>Total</span>
                     <span>Rp {receiptData.totalAmount.toLocaleString('id-ID')}</span>
                   </div>
+                  
+                  {/* TAMPILAN STRUK DINAMIS BERDASARKAN METODE PEMBAYARAN */}
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                    <span>Tunai</span>
-                    <span>Rp {receiptData.cashReceived.toLocaleString('id-ID')}</span>
+                    <span>Metode Bayar</span>
+                    <span>{receiptData.paymentMethod}</span>
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '14px', marginTop: '6px' }}>
-                    <span>Kembali</span>
-                    <span>Rp {receiptData.change.toLocaleString('id-ID')}</span>
-                  </div>
+                  
+                  {receiptData.paymentMethod === 'Tunai' ? (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                        <span>Tunai</span>
+                        <span>Rp {receiptData.cashReceived.toLocaleString('id-ID')}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '14px', marginTop: '6px' }}>
+                        <span>Kembali</span>
+                        <span>Rp {receiptData.change.toLocaleString('id-ID')}</span>
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '14px', marginTop: '6px' }}>
+                      <span>Status</span>
+                      <span>LUNAS</span>
+                    </div>
+                  )}
                 </div>
                 
                 <div style={{ textAlign: 'center', marginTop: '20px' }}>
@@ -375,7 +415,6 @@ export default function Cashier() {
 
             </div>
 
-            {/* Tombol Kontrol Modal */}
             <div style={{ marginTop: '20px', display: 'flex', gap: '10px', width: '100%' }}>
               <button onClick={handlePrint} style={{ flex: 1, padding: '12px', background: '#007bff', color: 'white', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' }}>
                 🖨️ Cetak Struk
